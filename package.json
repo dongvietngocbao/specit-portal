@@ -1,0 +1,20 @@
+{
+  "name": "specit-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SpecIt — Vertical SaaS Operating System for Construction Material Suppliers",
+  "license": "Proprietary",
+  "packageManager": "pnpm@11.18.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter=./apps/* run dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "clean": "pnpm -r run clean && rm -rf node_modules"
+  }
+}

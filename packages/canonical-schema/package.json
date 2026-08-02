@@ -1,0 +1,16 @@
+{
+  "name": "@specit/canonical-schema",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SpecIt Canonical Schema v3 — Material type registry, field definitions, and scoring rules. Source: SpecIt_canonical-schema-v3-final.xlsx",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

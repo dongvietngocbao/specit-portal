@@ -1,0 +1,470 @@
+// SpecIt — Prisma Schema (Supplier Portal Domain)
+// Generated from: Canonical Schema v3 + API v1 Contract
+//
+// Design principles for 10M+ SKU scale:
+//   1. Flat SKU table with JSONB for type-specific fields (not EAV)
+//   2. Matching fields extracted as columns for indexed search
+//   3. Multi-tenant from day 1 (organization_id everywhere)
+//   4. Append-only audit trail (not in-place updates for critical data)
+//   5. Cursor-based pagination support
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MANAGER
+  EDITOR
+  VIEWER
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+enum SkuStatus {
+  DRAFT
+  PARTIAL
+  ACTIVE
+  DISCONTINUED
+}
+
+enum ReviewStatus {
+  PENDING
+  AUTO_APPROVED
+  HUMAN_REVIEWED
+  FLAGGED
+}
+
+enum SourceType {
+  EXCEL_UPLOAD
+  PDF_EXTRACT
+  MANUAL
+  API
+}
+
+enum PriceType {
+  FIXED
+  QUOTE_REQUIRED
+  RANGE
+}
+
+enum Availability {
+  IN_STOCK
+  MADE_TO_ORDER
+  DISCONTINUED
+}
+
+enum Currency {
+  VND
+  USD
+}
+
+enum StagingStatus {
+  PENDING
+  MAPPED
+  FAILED
+  NEEDS_REVIEW
+}
+
+enum AssetType {
+  DIFFUSE
+  NORMAL
+  ROUGHNESS
+  AO
+  BUMP
+  DISPLACEMENT
+  PHOTO
+  PHOTO_ROOM
+  SPECSHEET
+}
+
+enum NotificationType {
+  DEMAND_SIGNAL
+  COMPLETENESS_GAP
+  EXTRACTION_COMPLETE
+  EXTRACTION_FAILED
+  REVIEW_NEEDED
+  SYSTEM
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUTH & MULTI-TENANCY
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String    @unique
+  password_hash String?
+  full_name     String?
+  avatar_url    String?
+  is_active     Boolean   @default(true)
+  is_superadmin Boolean   @default(false)
+  created_at    DateTime  @default(now()) @db.Timestamptz
+  updated_at    DateTime  @updatedAt @db.Timestamptz
+  last_login_at DateTime? @db.Timestamptz
+
+  memberships   Membership[]
+  refresh_tokens RefreshToken[]
+  notifications Notification[]
+  created_skus  Sku[]       @relation("SkuCreatedBy")
+  audit_logs    AuditLog[]
+  invitations   Invitation[] @relation("InvitationInviter")
+
+  @@map("users")
+}
+
+model Organization {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String   @unique
+  logo_url    String?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now()) @db.Timestamptz
+  updated_at  DateTime @updatedAt @db.Timestamptz
+
+  memberships Membership[]
+  skus        Sku[]
+  suppliers   Supplier[]
+  invitations Invitation[]
+  api_keys    ApiKey[]
+  settings    OrgSettings?
+
+  @@map("organizations")
+}
+
+model Membership {
+  id              String   @id @default(uuid()) @db.Uuid
+  user_id         String   @db.Uuid
+  organization_id String   @db.Uuid
+  role            UserRole @default(VIEWER)
+  created_at      DateTime @default(now()) @db.Timestamptz
+  updated_at      DateTime @updatedAt @db.Timestamptz
+
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, organization_id])
+  @@index([organization_id])
+  @@map("memberships")
+}
+
+model Invitation {
+  id              String            @id @default(uuid()) @db.Uuid
+  email           String
+  organization_id String            @db.Uuid
+  role            UserRole
+  token           String            @unique @default(uuid())
+  status          InvitationStatus  @default(PENDING)
+  invited_by      String            @db.Uuid
+  expires_at      DateTime          @db.Timestamptz
+  accepted_at     DateTime?         @db.Timestamptz
+  created_at      DateTime          @default(now()) @db.Timestamptz
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  inviter      User          @relation("InvitationInviter", fields: [invited_by], references: [id])
+
+  @@index([organization_id, status])
+  @@map("invitations")
+}
+
+model RefreshToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  user_id     String   @db.Uuid
+  token       String   @unique
+  expires_at  DateTime @db.Timestamptz
+  revoked_at  DateTime? @db.Timestamptz
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("refresh_tokens")
+}
+
+model ApiKey {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  name            String
+  key_hash        String   @unique
+  key_prefix      String
+  last_used_at    DateTime? @db.Timestamptz
+  is_active       Boolean  @default(true)
+  created_at      DateTime @default(now()) @db.Timestamptz
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@map("api_keys")
+}
+
+model OrgSettings {
+  id              String  @id @default(uuid()) @db.Uuid
+  organization_id String  @unique @db.Uuid
+  default_currency Currency @default(VND)
+  theme_preference String  @default("system")
+  notification_prefs Json?
+  created_at      DateTime @default(now()) @db.Timestamptz
+  updated_at      DateTime @updatedAt @db.Timestamptz
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@map("org_settings")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SUPPLIER PROFILE
+// ─────────────────────────────────────────────────────────────
+
+model Supplier {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  supplier_code   String   // SUP-VIGLACERA
+  name            String
+  brand           String?
+  email           String?
+  phone           String?
+  country         String?
+  website         String?
+  is_verified     Boolean  @default(false)
+  created_at      DateTime @default(now()) @db.Timestamptz
+  updated_at      DateTime @updatedAt @db.Timestamptz
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  skus         Sku[]
+
+  @@unique([organization_id, supplier_code])
+  @@index([organization_id])
+  @@map("suppliers")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SKU — THE CORE ENTITY
+// ─────────────────────────────────────────────────────────────
+// Designed for 10M+ rows:
+//   - Matching fields as top-level columns (indexed for search)
+//   - Type-specific fields in JSONB payload
+//   - Completeness score cached for fast ranking
+// ─────────────────────────────────────────────────────────────
+
+model Sku {
+  id          String     @id @default(uuid()) @db.Uuid
+  sku_id      String     // SPT-CER-VG6060-001 (human-readable)
+  organization_id String  @db.Uuid
+  supplier_id String?    @db.Uuid
+  created_by  String     @db.Uuid
+
+  // Identity (T0/T1)
+  product_name       String
+  material_type      String
+  brand              String?
+  model_number       String?
+  collection_name    String?
+  country_of_origin  String?
+  supplier_color_name String?
+
+  // Matching layer (indexed columns for fast search)
+  // These are denormalized from the JSONB payload for query performance
+  m_application    String[]
+  m_location       String[]
+  m_color_family   String?
+  m_color_hex      String?
+  m_tone           String?
+  m_pattern        String?
+  m_finish         String?
+  m_style_tags     String[]
+  m_space_type     String[]
+  m_price_segment  String?
+  m_slip_rating    String?
+  m_price_value    Int?
+  m_price_unit     String?
+
+  // Full payload (JSONB — type-specific fields, dimension, performance, etc.)
+  payload          Json
+
+  // System
+  status             SkuStatus    @default(DRAFT)
+  review_status      ReviewStatus @default(PENDING)
+  source_type        SourceType
+  completeness_score Int          @default(0)
+  version            Int          @default(1)
+  raw_extraction_id  String?  @unique
+  created_at         DateTime     @default(now()) @db.Timestamptz
+  updated_at         DateTime     @updatedAt @db.Timestamptz
+
+  // Relations
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  supplier     Supplier?    @relation(fields: [supplier_id], references: [id])
+  creator      User         @relation("SkuCreatedBy", fields: [created_by], references: [id])
+  assets       Asset[]
+  staging      StagingRecord?
+  demand_events DemandEvent[]
+  price_history DealerPrice[]
+  audit_logs   AuditLog[]
+
+  @@unique([organization_id, sku_id])
+  @@index([organization_id, status])
+  @@index([organization_id, material_type])
+  @@index([organization_id, completeness_score])
+  @@index([organization_id, m_color_family])
+  @@index([organization_id, m_price_segment])
+  @@index([supplier_id])
+  @@map("skus")
+}
+
+// ─────────────────────────────────────────────────────────────
+// ASSETS (files — stored in MinIO, metadata in DB)
+// ─────────────────────────────────────────────────────────────
+
+model Asset {
+  id           String    @id @default(uuid()) @db.Uuid
+  sku_id       String    @db.Uuid
+  asset_type   AssetType
+  storage_path String    // /assets/{sku_id}/diffuse.jpg
+  content_hash String
+  file_size    Int
+  mime_type    String
+  width_px     Int?
+  height_px    Int?
+  is_primary   Boolean   @default(false)
+  created_at   DateTime  @default(now()) @db.Timestamptz
+
+  sku Sku @relation(fields: [sku_id], references: [id], onDelete: Cascade)
+
+  @@unique([sku_id, asset_type])
+  @@index([sku_id])
+  @@map("assets")
+}
+
+// ─────────────────────────────────────────────────────────────
+// STAGING / EXTRACTION (AI extraction results before confirmation)
+// ─────────────────────────────────────────────────────────────
+
+model StagingRecord {
+  id                   String         @id @default(uuid()) @db.Uuid
+  organization_id      String         @db.Uuid
+  supplier_id          String?        @db.Uuid
+  raw_extraction_id    String         @unique // RAW-2026-0813
+  source_file          String         // /uploads/viglacera_catalog.pdf
+  source_file_name     String
+  source_page          String?
+  raw_text             String?
+  extraction_model     String?
+  extraction_confidence Int?
+  field_mapping        Json           // Per-field {value, confidence, source_text}
+  human_corrections    Json?
+  status               StagingStatus  @default(PENDING)
+  mapped_at            DateTime?      @db.Timestamptz
+  created_at           DateTime       @default(now()) @db.Timestamptz
+
+  sku Sku? @relation(fields: [raw_extraction_id], references: [raw_extraction_id], onDelete: SetNull)
+
+  @@index([organization_id, status])
+  @@map("staging_records")
+}
+
+// ─────────────────────────────────────────────────────────────
+// DEMAND SIGNAL (spec_count proxy)
+// ─────────────────────────────────────────────────────────────
+
+model DemandEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  sku_id      String   @db.Uuid
+  event_type  String   // spec_created, bom_referenced, viewed
+  event_data  Json?
+  region      String?
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  sku Sku @relation(fields: [sku_id], references: [id], onDelete: Cascade)
+
+  @@index([sku_id])
+  @@index([sku_id, created_at])
+  @@map("demand_events")
+}
+
+// ─────────────────────────────────────────────────────────────
+// DEALER PRICING (price history from multiple distributors)
+// ─────────────────────────────────────────────────────────────
+
+model DealerPrice {
+  id          String   @id @default(uuid()) @db.Uuid
+  sku_id      String   @db.Uuid
+  dealer_name String
+  price_value Int
+  price_unit  String
+  currency    Currency @default(VND)
+  region      String?
+  valid_from  DateTime @default(now()) @db.Timestamptz
+  valid_to    DateTime? @db.Timestamptz
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  sku Sku @relation(fields: [sku_id], references: [id], onDelete: Cascade)
+
+  @@index([sku_id])
+  @@index([sku_id, dealer_name])
+  @@map("dealer_prices")
+}
+
+// ─────────────────────────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id          String            @id @default(uuid()) @db.Uuid
+  user_id     String            @db.Uuid
+  type        NotificationType
+  title       String
+  message     String
+  metadata    Json?
+  channel     NotificationChannel @default(IN_APP)
+  is_read     Boolean           @default(false)
+  read_at     DateTime?         @db.Timestamptz
+  created_at  DateTime          @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, is_read])
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT TRAIL (append-only)
+// ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  user_id     String?  @db.Uuid
+  sku_id      String?  @db.Uuid
+  action      String   // sku.created, sku.updated, sku.status_changed
+  entity_type String
+  entity_id   String
+  changes     Json?
+  ip_address  String?
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  user User? @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  sku  Sku? @relation(fields: [sku_id], references: [id], onDelete: Cascade)
+
+  @@index([entity_type, entity_id])
+  @@index([sku_id])
+  @@map("audit_logs")
+}
